@@ -1,1 +1,1 @@
-# Lending-Club-Capstone-Project
+# Lending Club Capstone Project
