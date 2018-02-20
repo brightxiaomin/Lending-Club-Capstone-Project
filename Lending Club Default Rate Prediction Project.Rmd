@@ -1,0 +1,212 @@
+---
+title: "Lending Club Default Rate Prediction Project"
+author: "Min Xiao"
+date: "February 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Question Phase
+ideas:
+- Predict loan status (classification problem)
+
+
+## Model Phase
+ideas:
+-Clean Data
+-Explore Data
+    - variable identification
+    - variable analysis
+    - missing value treatment
+    - feature selection
+    - feature engineering
+    
+-build a logistic regression model
+
+
+## Read Data
+```{r}
+loan <- read.csv("C:\\Users\\Min\\Desktop\\Capstone Project\\loan.csv", stringsAsFactors = FALSE)
+loanT <- loan
+```
+
+## Explore Data
+
+### Variable identification
+
+#### Define Response
+The original data does not contain is_default feature for a loan record
+Need to add a new feature 'is_default' 
+```{r}
+# Remove extra description before the loan status
+loan$loan_status <- gsub('Does not meet the credit policy. Status:',
+                         '', loan$loan_status)
+
+#check to see if there is any missing value for this feature. res: no missing value
+length(which(is.na(loan$loan_status)))
+
+#add the new feature
+
+loan$is_default <- with(loan, ifelse(loan_status %in% c('Current', 'Fully Paid', 'Issued', 'In Grace Period'), 0, 1))
+
+response <- loan$is_default
+
+table(loan$is_default)
+
+```
+```{r}
+barplot(table(loan$is_default))
+```
+
+
+
+```{r}
+library(ggplot2)
+options(repr.plot.width=16, repr.plot.height=8)
+ggplot(as.data.frame(table(loan$is_default)), aes(x=Var1, y = Freq)) + geom_bar(stat="identity",fill='steelblue') + labs(x='is_default', y = 'Number of Loans')
+```
+
+```{r}
+default_rate <- length(which(response == 1)) / dim(loan)[1] * 100
+default_rate
+```
+
+
+The data is a little imbalanced, but we will just ignore it for now.
+
+### Variable Analysis
+
+### Other Possbile response variables with is_default
+
+#### 1. grade with is_default
+```{r}
+barplot(table(loan$is_default, loan$grade), col = c(1:14))
+```
+```{r}
+ggplot(as.data.frame(table(loan$is_default, loan$grade)), aes(x=Var2, y=Freq, fill=Var1)) + geom_bar(stat="identity") + labs(x='Grade', y = 'Number of Loans', fill='is_default')
+```
+
+```{r}
+table(loan$is_default, loan$grade)
+```
+```{r}
+default.rate.by.grade <- by(loan, loan$grade, function(x) {return(length(which(x$is_default == 1)) / dim(x)[1] * 100)})
+
+#default.rate.by.grade
+barplot(default.rate.by.grade, xlab ="Grade", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+
+#lines()
+```
+Clearly, We can see the default rate in different grade is different. The trend is the better the grade is, the lower default rate.
+
+#### 2. grade with is_default
+```{r}
+table(loan$is_default, loan$sub_grade)
+
+```
+
+```{r}
+default.rate.by.sub_grade <- by(loan, loan$sub_grade, function(x){return(length(which(x$is_default == 1)) / dim(x)[1] * 100)})
+
+#default.rate.by.grade
+barplot(default.rate.by.sub_grade, xlab ="Sub_grade", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+
+```
+
+As we can see, the trend is the same as grade.
+
+#### 3. int_rate with is_default
+```{r}
+#boxplot(subset(loan, is_default == 0)$int_rate ,
+        #subset(loan, is_default == 1)$int_rate )
+with(subset(loan, is_default == 0), plot(density(int_rate)))
+with(subset(loan, is_default == 1), lines(density(int_rate), col = 'red'))
+```
+```{r}
+boxplot(int_rate ~ is_default, data = loan, xlab='Grade', ylab='int_rate')
+```
+From the plot, we can clearly see default loans generally have higher interest rate.
+
+
+### User Feature (general)
+
+#### 4. addr_state  with response
+
+```{r}
+library(choroplethr)
+library(choroplethrMaps)
+
+#plot default rate by each state
+state.default.rate <- as.list(by(loan, loan$addr_state, function(x){return(length(which(x$is_default == 1)) / dim(x)[1] * 100)}))
+
+state.names <- names(state.default.rate)
+names(state.default.rate) <- NULL
+state.int_rate.df <- data.frame(region = state.names, value = unlist(state.default.rate))
+
+full.name = c()
+for(i in 1:51)
+{
+    if(i==8){
+        full.name <- append(full.name, "district of columbia")
+    }else{
+        full.name <- append(full.name, tolower(state.name[state.int_rate.df[i,1] == state.abb]))
+    }
+}
+
+state.int_rate.df$region = full.name
+
+options(repr.plot.width=16, repr.plot.height=8)
+state_choropleth(state.int_rate.df)
+
+```
+There is no clear relationship between addr_state and response
+
+We need to take a look at the number of loans in each state
+```{r}
+#plot number of loans by state
+state.loan.number <- as.list(by(loan, loan$addr_state, function(x){return(dim(x)[1])}))
+
+state.names <- names(state.loan.number)
+names(state.loan.number) <- NULL
+state.int_rate.df <- data.frame(region = state.names, value = unlist(state.loan.number))
+
+full.name = c()
+for(i in 1:51)
+{
+    if(i==8){
+        full.name <- append(full.name, "district of columbia")
+    }else{
+        full.name <- append(full.name, tolower(state.name[state.int_rate.df[i,1] == state.abb]))
+    }
+}
+
+state.int_rate.df$region = full.name
+
+options(repr.plot.width=16, repr.plot.height=8)
+state_choropleth(state.int_rate.df)
+```
+
+```{r}
+aov.res = aov(is_default ~ factor(addr_state), na.action = na.omit, data = loan)
+summary(aov.res)
+```
+Pattern is not clear here.
+
+
+
+
+#### loan_amnt with response
+```{r}
+ggplot(loan, aes(x = loan_amnt, y = is_default)) +  geom_point(aes(colour = is_default))
+
+```
+
+
+
+
+
