@@ -1,0 +1,1327 @@
+---
+title: "Lending Club Loan Default Rate Prediction Project"
+author: "Min Xiao"
+date: "February 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# OUTLINE
+## Question Phase
+ideas:
+* Predict loan status (classification problem)
+
+## Model Phase
+ideas:
+*Clean Data
+
+*Explore Data
+    + variable identification
+    + variable analysis
+    + missing value treatment
+    + feature engineering
+    + feature selection
+    
+*build a logistic regression model
+
+*build tree based models
+
+## Model Evaluation And Improvements
+
+## Model Compare
+
+## Conclusion
+
+
+
+## Read Data
+```{r}
+loan <- read.csv("C:\\Users\\Min\\Desktop\\Capstone Project\\loan.csv", stringsAsFactors = FALSE)
+loanT <- loan
+```
+We consider Default, Charged Off as default loan and Fully Paid as desirable loan and ignore everything else.
+```{r}
+# Remove extra description before the loan status
+loan$loan_status <- gsub('Does not meet the credit policy. Status:', '', loan$loan_status)
+
+#Only use the loans that are in "Default", "Charged Off", "Fully Paid" status
+loan <- loan[which(loan$loan_status %in% c('Default', 'Charged Off', 'Fully Paid')), ]
+
+```
+
+
+## Explore Data
+
+### Variable identification
+
+#### Define Response
+We reduce loan_status feature to a two level factor feature
+```{r}
+loan$loan_status <- ifelse(loan$loan_status =='Fully Paid', "Fully.Paid", "Default" )
+#add the new feature
+loan$loan_status <- factor(loan$loan_status,levels = c("Default","Fully.Paid"))
+
+table(loan$loan_status)
+
+```
+We did a quick analysis regarding data balance
+```{r}
+percent <- by(loan, loan$loan_status, function(x) {return(dim(x)[1] / nrow(loan) * 100)})
+barplot(percent, xlab ="loan_status", ylab = "Percentage") 
+```
+
+```{r}
+default_rate <- length(which(loan$loan_status == 'Default')) / dim(loan)[1] * 100
+default_rate
+```
+
+As we can see,the data is moderately imbalanced.It is okay to process without any rebalance work.
+
+### Variable Analysis
+
+### Other Possbile response variables with loan_status
+
+#### grade with loan_status
+
+```{r}
+default.rate.by.grade <- by(loan, loan$grade, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.grade, xlab ="Grade", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+
+```
+Clearly, We can see the default rate in different grade is different. The trend is the better the grade is, the lower default rate.
+
+#### sub_grade with loan_status
+
+```{r}
+default.rate.by.sub_grade <- by(loan, loan$sub_grade, function(x){return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.sub_grade, xlab ="sub_grade", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+
+```
+
+As we can see, the trend is the same as grade.
+
+#### int_rate with loan_status
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(int_rate)))
+with(subset(loan, loan_status == 'Default'), lines(density(int_rate), col = 'red'))
+```
+```{r}
+boxplot(int_rate ~ loan_status, data = loan, xlab='loan_status', ylab='int_rate')
+```
+From the above two plots, we can clearly see default loans generally have higher interest rate.
+
+
+### User Features (general)
+
+#### addr_state  with response
+
+```{r}
+library(choroplethr)
+library(choroplethrMaps)
+
+#plot default rate by each state
+state.default.rate <- as.list(by(loan, loan$addr_state, function(x){return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)}))
+
+state.names <- names(state.default.rate)
+names(state.default.rate) <- NULL
+state.int_rate.df <- data.frame(region = state.names, value = unlist(state.default.rate))
+
+full.name = c()
+for(i in 1:51)
+{
+    if(i==8){
+        full.name <- append(full.name, "district of columbia")
+    }else{
+        full.name <- append(full.name, tolower(state.name[state.int_rate.df[i,1] == state.abb]))
+    }
+}
+
+state.int_rate.df$region = full.name
+
+options(repr.plot.width=16, repr.plot.height=8)
+state_choropleth(state.int_rate.df)
+
+```
+There is no clear relationship between addr_state and default rate
+
+We need to take a look at the number of loans in each state
+```{r}
+#plot number of loans by state
+state.loan.number <- as.list(by(loan, loan$addr_state, function(x){return(dim(x)[1])}))
+
+state.names <- names(state.loan.number)
+names(state.loan.number) <- NULL
+state.int_rate.df <- data.frame(region = state.names, value = unlist(state.loan.number))
+
+full.name = c()
+for(i in 1:51)
+{
+    if(i==8){
+        full.name <- append(full.name, "district of columbia")
+    }else{
+        full.name <- append(full.name, tolower(state.name[state.int_rate.df[i,1] == state.abb]))
+    }
+}
+
+state.int_rate.df$region = full.name
+
+options(repr.plot.width=16, repr.plot.height=8)
+state_choropleth(state.int_rate.df)
+```
+
+Pattern is not clear here. We consider feature engineering, like binning, to reduce levels.
+
+```{r}
+# Feature engineering for addr_state > state_default_level
+default_state <- by(loan, loan$addr_state, function(x){return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+loan$state_default_level <- ifelse(loan$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.25))], 'low', ifelse(loan$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.5))], 'lowmedium', ifelse(loan$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.75))], 'mediumhigh', 'high')))
+```
+
+
+#### emp_length with loan_status
+```{r}
+default.rate.by.emp_length <- by(loan, loan$emp_length, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+
+barplot(default.rate.by.emp_length, xlab ="emp_length", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+There is no clear pattern for emp_length, but we can do some feature engineering to reduce levels.
+
+```{r}
+#featue engineering for emp_length
+#divide into three groups based years '>5' '<=5', 'Missing'
+loan$emp_length_sim <- ifelse(loan$emp_length %in% c('10+ years', '8 years','9 years','5 years','6 years','7 years'), '>= 5', ifelse(loan$emp_length %in% c('< 1 year', '1 year','2 years','3 years','4 years'), '< 5', 'Missing'))
+
+```
+
+
+#### emp_title with loan_status
+```{r}
+length(unique(loan$emp_title))
+```
+Too many levels, not relevant to response, just ignore it.
+
+
+#### home_ownership with loan_status
+```{r}
+default.rate.by.home_ownership <- by(loan, loan$home_ownership, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.home_ownership, xlab ="home_ownership", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+The trend here is MORTGAGE < OWN < Rent < OTHER
+
+We can do some feature engineering to combine some levels.
+```{r}
+#feature engineering for home_ownership
+loan$home_ownership1 <- ifelse(loan$home_ownership %in% c('ANY', 'NONE', 'OTHER'), 'OTHER',
+                              loan$home_ownership)
+```
+
+#### zip_code
+```{r}
+length(unique(loan$zip_code))
+```
+Too many levels, going to ignore it for now.
+
+
+### User features (financial specific)
+
+#### annual_inc with loan_status
+```{r}
+boxplot(log(annual_inc + 1) ~ loan_status, data = loan, xlab='loan_status', ylab='annual_inc')
+```
+From the plot, we can see default group has slightly lower average annual_inc.
+We then do some feature engineering for annual_inc.
+
+```{r}
+#feature engineering for annual_inc
+loan$annual_inc <- ifelse(!is.na(loan$annual_inc_joint), loan$annual_inc_joint, loan$annual_inc)
+
+# missing value, impute with median
+loan$annual_inc[which(is.na(loan$annual_inc))] <- median(loan$annual_inc, na.rm = T)
+
+#option 1. take log
+loan$log_annual_inc <- log(loan$annual_inc + 1)
+
+#option 2. Divide by loan_amnt
+loan$annual_inc_to_loan_amnt_percent <- loan$annual_inc / loan$loan_amnt * 100
+```
+
+#### verification_status with loan_status
+```{r}
+default.rate.by.verification_status <- by(loan, loan$verification_status, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.verification_status, xlab ="verification_status", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+Verified group has the highest default rate, which is contrary to intuition. 
+
+
+#### verification_status_joint 
+```{r}
+table(loan$verification_status_joint)
+```
+verification_status_joint: most of them are empty string. Ignore this feature.
+
+#### dti with loan_status
+```{r}
+boxplot(dti ~ loan_status, data = loan, xlab='loan_status', ylab='dti')
+```
+We can see default group has higher dti.
+
+We merge dti_joint with dti.
+```{r}
+#feature engineering for dti
+loan$dti <- ifelse(!is.na(loan$dti_joint), loan$dti_joint, loan$dti)
+```
+
+#### earliest_cr_line with response
+```{r}
+library(zoo)
+as.Date(as.yearmon(loan$issue_d[1:5], "%b-%Y"))
+loan$earliest_cr_line_date <- as.Date(as.yearmon(loan$earliest_cr_line, "%b-%Y"))
+loan$earliest_cr_line_year <- format(loan$earliest_cr_line_date, '%Y')
+```
+
+```{r}
+default.rate.by.year <- by(loan, loan$earliest_cr_line_year, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.year, xlab ="earliest_cr_line_year", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+There is some up and downs. No Clear pattern here.
+
+#### inq_fi
+```{r}
+sum(is.na(loan$inq_fi))/dim(loan)[1]
+```
+There are too many missing values.Although this feature (Number of personal finance inquiries
+) seems important, we have to drop it.
+
+#### inq_last_12m
+```{r}
+sum(is.na(loan$inq_last_12m))/dim(loan)[1]
+```
+Drop this feature
+
+#### inq_last_6mths with loan_status
+```{r}
+sum(is.na(loan$inq_last_6mths))
+```
+
+
+```{r}
+default.rate.by.inq_last_6mths <- by(loan, loan$inq_last_6mths, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.inq_last_6mths, xlab ="inq_last_6mths", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+There is general trend here, the more inquires, the higher default rate. The trend is more clear before 10. Also,data is sparse after 10.We will do some feature engineering here to reduce levels. Divide into 3 groups: 0, 1-5, >5
+
+```{r}
+#feature engineering for inq_last_6mths
+
+#impute with median
+loan$inq_last_6mths[which(is.na(loan$inq_last_6mths))] <- median(loan$inq_last_6mths, na.rm = TRUE)
+
+loan$inq_last_6mths_level <- ifelse(loan$inq_last_6mths == 0, 'low', ifelse(loan$inq_last_6mths <= 5, 'medium', 'high'))
+```
+
+
+#### last_credit_pull_d with loan_status
+```{r}
+default.rate.by.last_credit_pull_d <- by(loan, loan$last_credit_pull_d, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.last_credit_pull_d, xlab ="last_credit_pull_d", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+No clear pattern here. Ignore this feature for now.
+
+#### total_acc with loan_status
+```{r}
+sum(is.na(loan$total_acc))
+```
+Plot
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(total_acc, na.rm = T)))
+with(subset(loan, loan_status == 'Default'), lines(density(total_acc, na.rm = T), col = 'red'))
+```
+```{r}
+boxplot(total_acc ~ loan_status, data = loan, xlab='loan_status', ylab='total_acc')
+```
+Although there is no much difference in the two groups for this feature, I will keep it in the initial try.
+
+Impute missing value with median
+```{r}
+#Feature engineering for total_acc
+loan$total_acc[which(is.na(loan$total_acc))] <- median(loan$total_acc, na.rm = T)
+```
+
+
+#### tot_cur_bal with loan_status
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(tot_cur_bal, na.rm = T)))
+with(subset(loan, loan_status == 'Default'), lines(density(tot_cur_bal, na.rm = T), col = 'red'))
+```
+Take log for this feature
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(log(tot_cur_bal + 1), na.rm=TRUE)))
+with(subset(loan, loan_status == 'Default'), lines(density(log(tot_cur_bal + 1), na.rm = T), col = 'red'))
+```
+```{r}
+boxplot(log(tot_cur_bal + 1) ~ loan_status, data = loan, xlab='loan_status', ylab='log_tot_cur_bal')
+```
+No obvious visual pattern, we will keep this feature as log form.
+
+```{r}
+#Feature engineering for tot_cur_bal
+
+# missing value, impute with median
+loan$tot_cur_bal[which(is.na(loan$tot_cur_bal))] <- median(loan$tot_cur_bal, na.rm = T)
+
+#option 1. take log
+loan$log_tot_cur_bal <- log(loan$tot_cur_bal + 1)
+
+#option 2. Divide by loan_amnt
+loan$tot_cur_bal_to_loan_amnt_percent <- loan$tot_cur_bal / loan$loan_amnt * 100
+```
+
+#### all_util
+```{r}
+sum(is.na(loan$all_util))/dim(loan)[1]
+```
+Drop this feature
+
+#### open_acc with loan_status 
+```{r}
+sum(is.na(loan$open_acc))
+```
+
+```{r}
+boxplot(open_acc ~ loan_status, data = loan, xlab='loan_status', ylab='open_acc')
+```
+No clear difference between the two groups, we will keep this feature as it is.
+
+Impute missing with median
+```{r}
+#Feature Engineering for open_acc
+loan$open_acc[which(is.na(loan$open_acc))] <- median(loan$open_acc, na.rm = T)
+```
+
+#### open_acc_6m
+```{r}
+sum(is.na(loan$open_acc_6m))/dim(loan)[1]
+```
+Drop this feature
+
+#### total_cu_tl
+```{r}
+sum(is.na(loan$total_cu_tl))/dim(loan)[1]
+```
+Drop this feature
+
+#### acc_now_deling with loan_status
+```{r}
+sum(is.na(loan$acc_now_deling))
+```
+
+```{r}
+table(loan$acc_now_delinq)
+```
+Most of records is zero. Convert this feature to a binary feature.
+
+```{r}
+#Feature engineering for acc_now_delinq
+loan$acc_now_delinq[which(is.na(loan$acc_now_delinq))] <- 0
+loan$acc_now_delinq <- ifelse(loan$acc_now_delinq == 0, 0, 1)
+```
+
+```{r}
+default.rate.by.acc_now_delinq <- by(loan, loan$acc_now_delinq, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.acc_now_delinq, xlab ="acc_now_delinq", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+From the plot, generally the more occurrences, the higher the default rate. We keep this feature as binary form.
+
+#### delinq_2yrs with response
+```{r}
+sum(is.na(loan$delinq_2yrs))
+```
+
+```{r}
+library(ggplot2)
+options(repr.plot.width=16, repr.plot.height=8)
+ggplot(as.data.frame(table(loan$delinq_2yrs)), aes(x=Var1, y=Freq)) + 
+geom_bar(stat="identity") + 
+theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5),
+        legend.position = "none")
+```
+Most records have value 0. We will do binning to three levels 0, 1-5, >5
+```{r}
+#Feature engineering for delinq_2yrs
+#impute missing value with median
+loan$delinq_2yrs[which(is.na(loan$delinq_2yrs))] <- median(loan$delinq_2yrs, na.rm = T)
+
+loan$delinq_2yrs_level <- ifelse(loan$delinq_2yrs == 0, 'low', ifelse(loan$delinq_2yrs <= 5, 'medium', 'high'))
+```
+
+
+```{r}
+default.rate.by.delinq_2yrs_level <- by(loan, loan$delinq_2yrs_level, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.delinq_2yrs_level, xlab ="delinq_2yrs_level", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+
+#### mths_since_last_delinq with loan_status
+```{r}
+boxplot(mths_since_last_delinq ~ loan_status, data = loan, xlab='loan_status', ylab='mths_since_last_delinq')
+```
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(mths_since_last_delinq, na.rm=T)))
+with(subset(loan, loan_status == 'Default'), lines(density(mths_since_last_delinq, na.rm=T), col = 'red'))
+```
+No difference between the two group.Going to drop this feature.
+
+#### collections_12_mths_ex_med with loan_status
+```{r}
+sum(is.na(loan$collections_12_mths_ex_med))
+```
+
+```{r}
+table(loan$collections_12_mths_ex_med)
+```
+The data at bigger value is sparse. Reduce the levels to 3.
+
+```{r}
+#feature engineering for collections_12_mths_ex_med
+#impute NA with zero, which is more reasonable
+loan$collections_12_mths_ex_med[which(is.na(loan$collections_12_mths_ex_med))] <- 0
+
+loan$collections_12_mths_ex_med <- ifelse(loan$collections_12_mths_ex_med == 0, 'low', ifelse(loan$collections_12_mths_ex_med ==  1, 'medium', 'high'))
+```
+
+
+#### tot_coll_amt with loan_status
+```{r}
+sum(is.na(loan$tot_coll_amt)) / dim(loan)[1]
+```
+
+```{r}
+boxplot(tot_coll_amt ~ loan_status, data = loan, xlab='loan_status', ylab='tot_coll_amt')
+```
+
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(tot_coll_amt , na.rm = T)))
+with(subset(loan, loan_status == 'Default'), lines(density(tot_coll_amt, na.rm = T), col = 'red'))
+```
+
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(log(tot_coll_amt + 1), na.rm = T)))
+with(subset(loan, loan_status == 'Default'), lines(density(log(tot_coll_amt + 1), na.rm = T), col = 'red'))
+```
+Drop this feature...
+
+#### pub_rec
+```{r}
+sum(is.na(loan$pub_rec))
+```
+
+```{r}
+table(loan$pub_rec)
+```
+Very sparse on the high end, we will do some binning to reduce levels
+```{r}
+#feature engineering for pub_rec
+
+#impute missing value with median
+loan$pub_rec[which(is.na(loan$pub_rec))] <- median(loan$pub_rec, na.rm = T)
+loan$pub_rec <- ifelse(loan$pub_rec == 0, 'low', ifelse(loan$pub_rec < 3, 'medium', 'high'))
+```
+
+
+#### mths_since_last_major_derog
+```{r}
+sum(is.na(loan$mths_since_last_major_derog))/dim(loan)[1]
+```
+Drop it.
+
+#### mths_since_last_record
+```{r}
+sum(is.na(loan$mths_since_last_record))/dim(loan)[1]
+```
+Drop it.
+
+#### il_util
+```{r}
+sum(is.na(loan$il_util))/dim(loan)[1]
+```
+Drop
+
+#### mths_since_rcnt_il
+```{r}
+sum(is.na(loan$mths_since_rcnt_il))/dim(loan)[1]
+```
+Drop
+
+#### open_il_12m
+```{r}
+sum(is.na(loan$open_il_12m))/dim(loan)[1]
+```
+Drop
+
+#### open_il_24m
+```{r}
+sum(is.na(loan$open_il_24m))/dim(loan)[1]
+```
+Drop
+
+#### open_il_6m
+```{r}
+sum(is.na(loan$open_il_6m))/dim(loan)[1]
+```
+Drop
+
+#### total_bal_il
+```{r}
+sum(is.na(loan$total_bal_il))/dim(loan)[1]
+```
+Drop
+
+#### max_bal_bc
+```{r}
+sum(is.na(loan$max_bal_bc))/dim(loan)[1]
+```
+Drop
+
+#### open_rv_12m
+```{r}
+sum(is.na(loan$open_rv_12m))/dim(loan)[1]
+```
+Drop
+
+#### open_rv_24m
+```{r}
+sum(is.na(loan$open_rv_24m))/dim(loan)[1]
+```
+Drop
+
+#### revol_bal
+```{r}
+sum(is.na(loan$revol_bal))/dim(loan)[1]
+```
+
+
+```{r}
+boxplot(revol_bal ~ loan_status, data = loan, xlab='loan_status', ylab='revol_bal')
+```
+```{r}
+boxplot(log(revol_bal + 1) ~ loan_status, data = loan, xlab='loan_status', ylab='log revol_bal')
+
+```
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(log(revol_bal + 1), na.rm=TRUE)))
+with(subset(loan, loan_status == 'Default'), lines(density(log(revol_bal + 1), na.rm=T), col = 'red'))
+```
+There is no clear difference between default and non-default group.We just do some feature engineering. 
+
+```{r}
+#Feature Engineering for revol_bal
+
+#option 1. take log
+loan$log_revol_bal <- log(loan$revol_bal + 1)
+
+#option 2. Divide by loan_amnt
+loan$revol_bal_to_loan_amnt_percent <- loan$revol_bal / loan$loan_amnt * 100
+```
+
+#### revol_util
+```{r}
+sum(is.na(loan$revol_util))
+```
+
+```{r}
+#Feature Engineering for revol_util
+#impute with median
+loan$revol_util[which(is.na(loan$revol_util))] <- median(loan$revol_util, na.rm = T)
+```
+
+
+#### total_rev_hi_lim 
+```{r}
+sum(is.na(loan$total_rev_hi_lim))/dim(loan)[1]
+```
+```{r}
+summary(loan$total_rev_hi_lim)
+```
+
+
+```{r}
+boxplot(log(total_rev_hi_lim + 1) ~ loan_status, data = loan, xlab='loan_status', ylab='total_rev_hi_lim')
+```
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(log(total_rev_hi_lim + 1), na.rm=TRUE)))
+with(subset(loan, loan_status == 'Default'), lines(density(log(total_rev_hi_lim + 1), na.rm=T), col = 'red'))
+```
+There is no clear difference in the two groups. We just do some feature engineering.
+```{r}
+#Feature Engineering for total_rev_hi_lim
+#impute with median
+loan$total_rev_hi_lim[which(is.na(loan$total_rev_hi_lim))] <- median(loan$total_rev_hi_lim, na.rm = T)
+
+#Take log
+loan$log_total_rev_hi_lim <- log(loan$total_rev_hi_lim + 1)
+```
+
+### Loan General Features
+#### Purpose
+```{r}
+unique(loan$purpose)
+```
+
+```{r}
+default.rate.by.purpose <- by(loan, loan$purpose, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+default.rate.by.purpose.sort <-sort(default.rate.by.purpose, decreasing = T) 
+
+barplot(default.rate.by.purpose.sort, xlab ="purpose", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+Each group is different, we include this feature as it is.
+
+
+#### Term
+```{r}
+sum(is.na(loan$term))
+```
+
+```{r}
+default.rate.by.term <- by(loan, loan$term, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.term, xlab ="term", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+Clearly, the default rate is higher in 60 months group.
+
+
+#### initial_list_status
+```{r}
+sum(is.na(loan$initial_list_status))
+```
+Plot
+```{r}
+default.rate.by.initial_list_status <- by(loan, loan$initial_list_status, function(x) {return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+
+barplot(default.rate.by.initial_list_status, xlab ="initial_list_status", ylab = "Default Rate Percentage") 
+abline(h=default_rate)
+```
+There is some slightly difference between the two groups, we keep it.
+
+### Loan payment feature
+
+#### loan_amnt
+```{r}
+sum(is.na(loan$loan_amnt))
+```
+Plot
+```{r}
+boxplot(loan_amnt ~ loan_status, data = loan, xlab='loan_status', ylab='loan_amnt')
+```
+
+```{r}
+with(subset(loan, loan_status == 'Fully.Paid'), plot(density(loan_amnt, na.rm = T)))
+with(subset(loan, loan_status == 'Default'), lines(density(loan_amnt, na.rm = T), col = 'red'))
+```
+There is some weak pattern that the default group have larger loan amount.
+
+```{r}
+#feature engineering for loan_amnt
+loan$log_loan_amnt <- log(loan$loan_amnt + 1)
+```
+
+#### installment 
+```{r}
+sum(is.na(loan$installment))/dim(loan)[1]
+```
+
+```{r}
+cor(loan$installment, loan$loan_amnt)
+```
+Because this feature is highly correlated with loan_amnt, we drop it.
+
+####  funded_amnt
+```{r}
+sum(is.na(loan$funded_amnt))
+```
+
+```{r}
+cor(loan$funded_amnt, loan$loan_amnt)
+```
+Because this feature is highly correlated with loan_amnt, we drop it.
+
+
+#### funded_amnt_inv
+```{r}
+cor(loan$funded_amnt_inv, loan$loan_amnt)
+```
+Because this feature is highly correlated with loan_amnt, we drop it.
+
+#### last_pymnt_amnt
+```{r}
+sum(is.na(loan$last_pymnt_amnt))/dim(loan)[1]
+```
+
+Plot
+```{r}
+boxplot(last_pymnt_amnt ~ loan_status, data = loan, xlab='loan_status', ylab='last_pymnt_amnt')
+
+```
+The two groups show significant difference on this feature. This is a very strong predictor. 
+
+```{r}
+#feature engineering for last_pymnt_amnt
+#divide by loan_amount
+loan$last_pymnt_amnt_to_loan_amnt_percent <- loan$last_pymnt_amnt / loan$loan_amnt * 100
+```
+```{r}
+boxplot(last_pymnt_amnt_to_loan_amnt_percent ~ loan_status, data = loan, xlab='loan_status', ylab='last_pymnt_amnt_to_loan_amnt_percent')
+```
+It seems this feature will be a too strong predictor.
+
+#### pymnt_plan
+```{r}
+table(loan$pymnt_plan)
+```
+Drop this feature.
+
+#### recoveries
+```{r}
+sum(is.na(loan$recoveries))
+```
+
+Plot
+```{r}
+boxplot(recoveries ~ loan_status, data = loan, xlab='loan_status', ylab='recoveries')
+```
+
+```{r}
+boxplot(log(recoveries + 1) ~ loan_status, data = loan, xlab='loan_status', ylab='int_rate')
+```
+Do not use this feature because this happens only after charged off.
+
+#### total_rec_late_fee
+```{r}
+sum(is.na(loan$total_rec_late_fee))
+```
+Plot
+```{r}
+boxplot(total_rec_late_fee ~ loan_status, data = loan, xlab='loan_status', ylab='total_rec_late_fee')
+
+```
+
+```{r}
+with(subset(loan, loan_status == 'Default'), plot(density(total_rec_late_fee, na.rm = T)))
+with(subset(loan, loan_status == 'Fully.Paid'), lines(density(total_rec_late_fee, na.rm = T), col = 'red'))
+```
+Most values for this feature are 0, drop it.
+
+### Feature Selection
+Based on the above analysis, the features selected are:
+'addr_state', 'emp_length', 'home_ownership', 'annual_inc', 'verification_status', 'dti', 'inq_last_6mths', 'total_acc', 'tot_cur_bal', 'open_acc', 'acc_now_delinq', 'delinq_2yrs', 'collections_12_mths_ex_med', 'pub_rec', 'revol_bal', 'revol_util','total_rev_hi_lim', 'purpose', 'term',  'initial_list_status', 'loan_amnt', 'last_pymnt_amnt'
+
+### Missing value treatment
+In our first home work assignment, we just delete those features that have more than 80 percent missing values. But this time, we do some analysis for them to see if the missing rate for a certain feature is different in the two groups.
+
+```{r}
+# to get the column names of those with more than 80% percent mising values
+num.NA <- sort(sapply(loan, function(x) { sum(is.na(x))} ), decreasing = TRUE)
+missing.col <- names(num.NA)[which(num.NA > 0.8 * dim(loan)[1])]
+
+default.group <- subset(loan, loan_status == 'Default')[, missing.col]
+paid.group <- subset(loan, loan_status == 'Fully.Paid')[, missing.col]
+
+# Calculate the missing rate 
+default.group.na.rate <- sapply(default.group , function(x) { sum(is.na(x)) / dim(default.group)[1] * 100})
+
+paid.group.na.rate <- sapply(paid.group, function(x) { sum(is.na(x)) / dim(paid.group)[1] * 100})
+
+missing.rate <-rbind(default.group.na.rate, paid.group.na.rate)
+```
+
+
+```{r}
+missing.rate.df <- as.data.frame(missing.rate)
+missing.rate.df[, 1:6]
+missing.rate.df[, 7:12]
+missing.rate.df[, 13:18]
+```
+Based on the above analysis, there is no difference in terms of missing value rate in the two groups. Our missing value treatment is fine.
+
+
+### Feature Engineering
+We combine all the feature engineering we do in the above and put it one function
+```{r}
+applyFeatureEngineering <- function(data)
+{
+	# Feature engineering for addr_state > state_default_level
+	default_state <- by(data, data$addr_state, function(x){return(length(which(x$loan_status == 'Default')) / dim(x)[1] * 100)})
+	data$state_default_level <- ifelse(data$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.25))], 'low', ifelse(data$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.5))], 'lowmedium', ifelse(data$addr_state %in% names(default_state)[which(default_state <= quantile(default_state, 0.75))], 'mediumhigh', 'high')))
+
+	#featue engineering for emp_length
+	#divide into three groups based years '>5' '<=5', 'Missing'
+	data$emp_length_sim <- ifelse(data$emp_length %in% c('10+ years', '8 years','9 years','5 years','6 years','7 years'), '>= 5', ifelse(data$emp_length %in% c('< 1 year', '1 year','2 years','3 years','4 years'), '< 5', 'Missing'))
+
+	#feature engineering for home_ownership
+	data$home_ownership1 <- ifelse(data$home_ownership %in% c('ANY', 'NONE', 'OTHER'), 'OTHER', data$home_ownership)
+
+	#feature engineering for annual_inc
+	data$annual_inc <- ifelse(!is.na(data$annual_inc_joint), data$annual_inc_joint, data$annual_inc)
+	# missing value, impute with median
+	data$annual_inc[which(is.na(data$annual_inc))] <- median(data$annual_inc, na.rm = T)
+	#option 1. take log
+	data$log_annual_inc <- log(data$annual_inc + 1)
+	#option 2. Divide by loan_amnt
+	data$annual_inc_to_loan_amnt_percent <- data$annual_inc / data$loan_amnt * 100
+
+	#feature engineering for dti
+	data$dti <- ifelse(!is.na(data$dti_joint), data$dti_joint, data$dti)	
+	
+	#feature engineering for inq_last_6mths
+	data$inq_last_6mths[which(is.na(data$inq_last_6mths))] <- median(data$inq_last_6mths, na.rm = TRUE)
+	data$inq_last_6mths_level <- ifelse(data$inq_last_6mths == 0, 'low', ifelse(data$inq_last_6mths <= 5, 'medium', 'high'))		
+
+	#Feature engineering for total_acc
+	data$total_acc[which(is.na(data$total_acc))] <- median(data$total_acc, na.rm = T)
+
+	#Feature engineering for tot_cur_bal
+	# missing value, impute with median
+	data$tot_cur_bal[which(is.na(data$tot_cur_bal))] <- median(data$tot_cur_bal, na.rm = T)
+	#option 1. take log
+	data$log_tot_cur_bal <- log(data$tot_cur_bal + 1)
+	#option 2. Divide by loan_amnt
+	data$tot_cur_bal_to_loan_amnt_percent <- data$tot_cur_bal / data$loan_amnt * 100
+
+	#Feature Engineering for open_acc
+	data$open_acc[which(is.na(data$open_acc))] <- median(data$open_acc, na.rm = T)
+
+	#Feature engineering for acc_now_delinq
+	data$acc_now_delinq[which(is.na(data$acc_now_delinq))] <- 0
+	data$acc_now_delinq <- ifelse(data$acc_now_delinq == 0, 0, 1)
+
+	#Feature engineering for delinq_2yrs
+	#impute missing value with median
+	data$delinq_2yrs[which(is.na(data$delinq_2yrs))] <- median(data$delinq_2yrs, na.rm = T)
+	data$delinq_2yrs_level <- ifelse(data$delinq_2yrs == 0, 'low', ifelse(data$delinq_2yrs <= 5, 'medium', 'high'))	
+
+	#feature engineering for collections_12_mths_ex_med
+	#impute with zero for NA, which is more reasonable
+	data$collections_12_mths_ex_med[which(is.na(data$collections_12_mths_ex_med))] <- 0
+	data$collections_12_mths_ex_med_level <- ifelse(data$collections_12_mths_ex_med == 0, 'low', ifelse(data$collections_12_mths_ex_med ==  1, 'medium', 'high'))			
+								  
+	#feature engineering for pub_rec
+
+	#impute missing value with median
+	data$pub_rec[which(is.na(data$pub_rec))] <- median(data$pub_rec, na.rm = T)
+	data$pub_rec <- ifelse(data$pub_rec == 0, 'low', ifelse(data$pub_rec < 3, 'medium', 'high'))
+
+	#Feature Engineering for revol_bal
+	#option 1. take log
+	data$log_revol_bal <- log(data$revol_bal + 1)
+	#option 2. Divide by loan_amnt
+	data$revol_bal_to_loan_amnt_percent <- data$revol_bal / data$loan_amnt * 100
+	
+	#Feature Engineering for revol_util
+	#impute with median
+	data$revol_util[which(is.na(data$revol_util))] <- median(data$revol_util, na.rm = T)
+	
+	#Feature Engineering for total_rev_hi_lim
+	#impute with median
+	data$total_rev_hi_lim[which(is.na(data$total_rev_hi_lim))] <- median(data$total_rev_hi_lim, na.rm = T)
+	#Take log
+	data$log_total_rev_hi_lim <- log(data$total_rev_hi_lim + 1)
+
+	#feature engineering for loan_amnt
+	data$log_loan_amnt <- log(data$loan_amnt + 1)
+	
+	#feature engineering for last_pymnt_amnt
+	#divide by loan_amount
+	data$last_pymnt_amnt_to_loan_amnt_percent <- data$last_pymnt_amnt / data$loan_amnt * 100
+	
+	return (data)
+}
+
+```
+
+## Build Model
+
+### Data split
+```{r}
+set.seed(1)
+train.ind <- sample(1:dim(loan)[1], 0.7 * dim(loan)[1])
+
+#selected.features <- c('loan_status','addr_state', 'state_default_level', 'emp_length', 'emp_length_sim', 'home_ownership','home_ownership1', 'annual_inc', 'log_annual_inc', 'annual_inc_to_loan_amnt_percent', 'verification_status', 'dti', 'inq_last_6mths', 'inq_last_6mths_level', 'total_acc', 'tot_cur_bal', 'log_tot_cur_bal', 'tot_cur_bal_to_loan_amnt_percent', 'open_acc', 'acc_now_delinq', 'delinq_2yrs', 'delinq_2yrs_level', 'collections_12_mths_ex_med','pub_rec', 'revol_bal', 'log_revol_bal', 'revol_bal_to_loan_amnt_percent', 'revol_util', 'total_rev_hi_lim', 'log_total_rev_hi_lim', 'purpose', 'term', 'initial_list_status', 'loan_amnt', 'log_loan_amnt', 'last_pymnt_amnt', 'last_pymnt_amnt_to_loan_amnt_percent')
+
+#Simpler vectors - log form
+#selected.features <- c('loan_status', 'state_default_level', 'emp_length_sim', 'home_ownership1', 'log_annual_inc', 'verification_status', 'dti', 'inq_last_6mths_level', 'total_acc', 'log_tot_cur_bal', 'open_acc', 'acc_now_delinq', 'delinq_2yrs_level', 'collections_12_mths_ex_med', 'pub_rec', 'log_revol_bal', 'revol_util', 'log_total_rev_hi_lim', 'purpose', 'term',  'initial_list_status', 'log_loan_amnt')
+
+#Add payment feature 'last_pymnt_amnt_to_loan_amnt_percent'
+selected.features <- c('loan_status', 'state_default_level', 'emp_length_sim', 'home_ownership1', 'log_annual_inc', 'verification_status', 'dti', 'inq_last_6mths_level', 'total_acc', 'log_tot_cur_bal', 'open_acc', 'acc_now_delinq', 'delinq_2yrs_level', 'collections_12_mths_ex_med', 'pub_rec', 'log_revol_bal', 'revol_util', 'log_total_rev_hi_lim', 'purpose', 'term',  'initial_list_status', 'log_loan_amnt', 'last_pymnt_amnt_to_loan_amnt_percent')
+
+
+train <- loan[train.ind, selected.features]
+test <- loan[-train.ind, selected.features]
+```
+
+
+### Logistic Model
+First we try logistic model.
+```{r}
+#Log Form
+#formula <- 'loan_status' ~ 'state_default_level' + 'emp_length_sim' + 'home_ownership1' + 'log_annual_inc' + 'verification_status' + 'dti' + 'inq_last_6mths_level' + 'total_acc' + 'log_tot_cur_bal' + 'open_acc' + 'acc_now_delinq' + 'delinq_2yrs_level' + 'collections_12_mths_ex_med' + 'pub_rec' + 'log_revol_bal' + 'revol_util' + 'log_total_rev_hi_lim' + 'purpose' + 'term' +  'initial_list_status' + 'log_loan_amnt' + 'last_pymnt_amnt_to_loan_amnt_percent'
+
+
+#Divide By Loan Amount
+#formula2 <- 'loan_status' ~ 'addr_state' + 'emp_length' + 'home_ownership' + 'annual_inc_to_loan_amnt_percent' + 'verification_status' + 'dti' + 'inq_last_6mths' + 'total_acc' + 'tot_cur_bal_to_loan_amnt_percent' + 'open_acc' + 'acc_now_delinq' + 'delinq_2yrs_level' + 'collections_12_mths_ex_med' + 'pub_rec' + 'revol_bal_to_loan_amnt_percent' + 'revol_util' + 'log_total_rev_hi_lim' + 'purpose' + 'term' +  'initial_list_status' + 'log_loan_amnt' + 'last_pymnt_amnt_to_loan_amnt_percent'
+
+#All Original Features
+#formula3 <- 'loan_status' ~ 'addr_state' + 'emp_length' + 'home_ownership' + 'annual_inc' + 'verification_status' + 'dti' + 'inq_last_6mths' + 'total_acc' + 'tot_cur_bal' + 'open_acc' + 'acc_now_delinq' + 'delinq_2yrs' + 'collections_12_mths_ex_med' + 'pub_rec' + 'revol_bal' + 'revol_util' +'total_rev_hi_lim' + 'purpose' + 'term' +  'initial_list_status' + 'loan_amnt' + 'last_pymnt_amnt'
+
+formula <- loan_status ~.
+
+lr.model <- glm(formula, data=train, family =binomial)
+```
+
+#### Predict and plot
+We evaluate our model for test dataset
+```{r}
+library(pROC)
+
+predict_loan_status_lr = predict(lr.model, test, type="response")
+
+rocCurve_lr = roc(response = test$loan_status, predictor = predict_loan_status_lr)
+auc_curve = auc(rocCurve_lr)
+
+plot(rocCurve_lr,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Logistic Regression)")
+
+```
+
+We combine the metrics into a table 
+```{r}
+library(caret)
+
+table_perf = data.frame(model=character(0),
+                        auc=numeric(0),
+                        accuracy=numeric(0),
+                        sensitivity=numeric(0),
+                        specificity=numeric(0),
+                        kappa=numeric(0),
+                        stringsAsFactors = FALSE
+                        )
+
+predict_loan_status_label = ifelse(predict_loan_status_lr<0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[1,] = c("logistic regression",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+### Logistic Regression for last_pymnt_amnt only
+```{r}
+formula.one <- loan_status ~ last_pymnt_amnt_to_loan_amnt_percent
+
+lr.model.one <- glm(formula.one, data=train, family =binomial)
+```
+
+#### Predict and plot
+We evaluate our model for test dataset
+```{r}
+predict_loan_status_lr_one = predict(lr.model.one, test, type="response")
+
+rocCurve_lr_one = roc(response = test$loan_status, predictor = predict_loan_status_lr_one)
+auc_curve = auc(rocCurve_lr_one)
+
+plot(rocCurve_lr_one,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Logistic Regression)")
+
+```
+
+
+### Decision Tree
+```{r}
+library(rpart)
+formula <- loan_status ~ .
+tree <- rpart(formula, method = 'class', data = train, control=rpart.control(cp = 0.0001)) 
+```
+
+
+#### Predict and Plot
+```{r}
+predict_loan_status_tree = predict(tree, test, 'prob')
+
+predict_loan_status_tree = as.data.frame(predict_loan_status_tree)$Fully.Paid
+
+rocCurve_tree = roc(response = test$loan_status, predictor = predict_loan_status_tree)
+auc_curve = auc(rocCurve_tree)
+
+plot(rocCurve_tree,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Single Tree)")
+```
+
+Combine Metrics
+```{r}
+predict_loan_status_label = ifelse(predict_loan_status_tree<0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[2,] = c("Single Tree",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+
+### Bagging
+```{r}
+library(ipred)
+formula <- loan_status ~.
+bag.model <- bagging(formula, data = train, coob = T)
+```
+
+#### Predict and Plot
+```{r}
+predict_loan_status_bag = predict(bag.model, test, 'prob')
+predict_loan_status_bag = as.data.frame(predict_loan_status_bag)$Fully.Paid
+
+rocCurve_bag = roc(response = test$loan_status, predictor = predict_loan_status_bag)
+auc_curve = auc(rocCurve_bag)
+
+plot(rocCurve_bag,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Bagging Tree)")
+```
+
+Combine Metrics
+```{r}
+predict_loan_status_label = ifelse(predict_loan_status_bag <0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[3,] = c("Bagging Tree",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+
+```{r}
+factorize <- function (data)
+{
+  data$state_default_level <- as.factor(data$state_default_level)
+  data$emp_length_sim <- as.factor(data$emp_length_sim)
+  data$home_ownership1 <- as.factor(data$home_ownership1)
+  data$verification_status <- as.factor(data$verification_status)
+  data$inq_last_6mths_level <- as.factor(data$inq_last_6mths_level)
+  data$delinq_2yrs_level <- as.factor(data$delinq_2yrs_level)
+  data$collections_12_mths_ex_med_level <- as.factor(data$collections_12_mths_ex_med_level)
+  data$term <- as.factor(data$term)
+  data$initial_list_status <- as.factor(data$initial_list_status)
+ return (data)   
+}
+
+```
+
+
+### Random Forest
+```{r}
+library(randomForest)
+
+train$state_default_level <- as.factor(train$state_default_level)
+train$emp_length_sim <- as.factor(train$emp_length_sim)
+train$home_ownership1 <- as.factor(train$home_ownership1)
+train$verification_status <- as.factor(train$verification_status)
+train$inq_last_6mths_level <- as.factor(train$inq_last_6mths_level)
+train$delinq_2yrs_level <- as.factor(train$delinq_2yrs_level)
+train$collections_12_mths_ex_med <- as.factor(train$collections_12_mths_ex_med)
+train$purpose <- as.factor(train$purpose)
+train$term <- as.factor(train$term)
+train$initial_list_status <- as.factor(train$initial_list_status)
+train$pub_rec <- as.factor(train$pub_rec)
+
+```
+```{r}
+train.char <- sapply(train, is.character)
+names(train.char)[which(train.char == T)]
+```
+
+```{r}
+set.seed(2)
+rf <- randomForest(loan_status ~., data = train, importance = TRUE, do.trace = TRUE, nodesize = 500, ntree = 30)
+```
+
+#### Plot Importance
+```{r}
+varImpPlot(rf)
+```
+
+#### Predict and Plot 
+```{r}
+# test
+test$state_default_level <- as.factor(test$state_default_level)
+test$emp_length_sim <- as.factor(test$emp_length_sim)
+test$home_ownership1 <- as.factor(test$home_ownership1)
+test$verification_status <- as.factor(test$verification_status)
+test$inq_last_6mths_level <- as.factor(test$inq_last_6mths_level)
+test$delinq_2yrs_level <- as.factor(test$delinq_2yrs_level)
+test$collections_12_mths_ex_med <- as.factor(test$collections_12_mths_ex_med)
+test$purpose <- as.factor(test$purpose)
+test$term <- as.factor(test$term)
+test$initial_list_status <- as.factor(test$initial_list_status)
+test$pub_rec <- as.factor(test$pub_rec)
+  
+predict_loan_status_rf = predict(rf, test, 'prob')
+predict_loan_status_rf = as.data.frame(predict_loan_status_rf)$Fully.Paid
+
+rocCurve_rf = roc(response = test$loan_status, predictor = predict_loan_status_rf)
+auc_curve = auc(rocCurve_rf)
+
+plot(rocCurve_rf,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Random Forest)")
+
+```
+Original AUC: 0.570
+Improve a little: 0.575
+
+Combine Metrics
+```{r}
+predict_loan_status_label = ifelse(predict_loan_status_rf <0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[4,] = c("Random Forest",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+
+### Boosting
+```{r}
+library(xgboost) 
+
+feature.matrix  <- model.matrix( ~., train[, -1])
+train.label <- as.numeric(train$loan_status) - 1
+gbt <- xgboost(data =  feature.matrix, 
+               label = train.label, 
+               max_depth = 8, # for each tree, how deep it goes
+               nround = 100, # number of trees
+               objective = "binary:logistic",
+               eval_metric = "auc",
+               nthread = -1,
+               verbose = 1)
+```
+
+#### Predict and Plot
+```{r}
+test.feature.matrix  <- model.matrix( ~., test[, -1])
+predict_loan_status_xgb = predict(gbt, test.feature.matrix)
+
+rocCurve_xgb = roc(response = test$loan_status,predictor = predict_loan_status_xgb)
+auc_curve = auc(rocCurve_xgb)
+
+plot(rocCurve_xgb,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(XGB)")
+```
+
+Combine Metrics
+```{r}
+predict_loan_status_label = ifelse(predict_loan_status_xgb <0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[5,] = c("XGB",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+### Averaging Ensemble
+```{r}
+predict_loan_status_ensemble = predict_loan_status_lr +
+                               predict_loan_status_tree +
+                               predict_loan_status_bag +
+                               predict_loan_status_rf +
+                               predict_loan_status_xgb
+
+predict_loan_status_ensemble = predict_loan_status_ensemble / 5
+rocCurve_ensemble = roc(response = test$loan_status, predictor = predict_loan_status_ensemble)
+
+auc_curve = auc(rocCurve_ensemble)
+plot(rocCurve_ensemble,legacy.axes = TRUE,print.auc = TRUE,col="red",main="ROC(Ensemble Avg.)")
+```
+
+Combine Metrics
+```{r}
+predict_loan_status_label = ifelse(predict_loan_status_ensemble < 0.3,"Default","Fully.Paid")
+c = confusionMatrix(predict_loan_status_label,test$loan_status, positive="Fully.Paid")
+
+table_perf[6,] = c("Ensemble",
+  round(auc_curve,3),
+  as.numeric(round(c$overall["Accuracy"],3)),
+  as.numeric(round(c$byClass["Sensitivity"],3)),
+  as.numeric(round(c$byClass["Specificity"],3)),
+  as.numeric(round(c$overall["Kappa"],3))
+  )
+
+tail(table_perf,1)
+```
+
+
+## Compare Model
+```{r}
+table_perf
+```
+
+Create a figure to combine the ROC curves for all models 
+```{r}
+
+plot(rocCurve_lr,legacy.axes = TRUE,col="red",main="ROC compare")
+plot(rocCurve_tree,legacy.axes = TRUE,col="blue",add=TRUE)
+plot(rocCurve_bag,legacy.axes = TRUE,col="green",add=TRUE)
+plot(rocCurve_rf,legacy.axes = TRUE,col="orange",add=TRUE)
+plot(rocCurve_xgb,legacy.axes = TRUE,col="cyan",add=TRUE)
+plot(rocCurve_ensemble,legacy.axes = TRUE,col="black",add=TRUE)
+
+legend("bottomright",legend=c("lr","tree","bagging","rf","xgb", "ensemble"),fill=c("red","blue","green","orange","cyan", "black"))
+```
+
+## Conclusion
+
+We followed a typical work flow in this project. We first defined the problem. Then we did feature exploration and feature engineering. After that, we tried different models of logistic regression, decision tree, bagging, random forest, boosting, and average ensemble.  We also evaluated the performance of those models and did a comparison between them.
+Logistic regression model gives a reasonable performance in determining good loans from bad loans compared with other models. Considering the simplicity and Interpretability of logistic regression, we recommend it as model of choice for predicting lending club dataset default rate. 
+
+
